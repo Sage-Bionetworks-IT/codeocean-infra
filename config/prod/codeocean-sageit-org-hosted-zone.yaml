@@ -1,0 +1,8 @@
+template:
+  path: "HostedZone.yaml"
+stack_name: "codeocean-sageit-org-hosted-zone"
+stack_tags:
+  OwnerEmail: "it@sagebase.org"
+  CostCenter: "Platform Infrastructure / 990300"
+parameters:
+  DnsDomainName: "codeocean.sageit.org"

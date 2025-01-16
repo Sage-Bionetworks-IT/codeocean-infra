@@ -1,10 +1,14 @@
-# This cloudformation template is from codeocean, downloaded from
-# https://docs.codeocean.com/admin-guide/deployment-guide/cloudformation-deployment
-Description: Code Ocean VPC deployment stack
+# Do the following to allow this cloudformation template to
+# automatically validate SSL certificate using DNS validation.
+# 1. Create a hosted zone (i.e. codeocean.mydomain.com) in Route 53
+# 2. Add the generated NS records to the hosted zone where the
+#   domain (mydomain.com) is registered
+# more info: https://docs.codeocean.com/admin-guide/deployment-guide/subdomain-delegation
+
 Metadata:
   CodeOcean::VersionInfo:
-    Version: v3.1.2
-    Commit: 8bada8cd8687e19c6b53c3e4eab6ddd99f8aaf97
+    Version: v3.0.4
+    Commit: 3032928d5c1dd7e33cda8f726a30278aaa3ab21c
   AWS::CloudFormation::Interface:
     ParameterGroups:
       - Label:
@@ -502,9 +506,9 @@ Parameters:
   pGPUWorkerInstanceType:
     Type: String
     Default: g4dn.4xlarge
-    AllowedPattern: ^(g(4(ad|dn)|5|(r)?6)|p(3(dn)?|4d|5))\.([1-9]?[2468])?xlarge$
-    ConstraintDescription: Instance type must belong to the P (3|3dn|4d|5) or G (4ad|4dn|5|6|r6) families
-    Description: EC2 instance type for GPU Workers. Instance type must belong to the P (3|3dn|4d|5) or G (4ad|4dn|5|6|r6) families.
+    AllowedPattern: ^[gp]{1}[34567r]{1}[6adns]{0,2}\.[0-9]{0,2}xlarge{1}$
+    ConstraintDescription: Instance type must be from the P or G families
+    Description: EC2 instance type for GPU Workers. Instance type must be from the P or G families.
   pWorkersAsgMaxSize:
     Type: Number
     Default: "10"
@@ -4117,10 +4121,6 @@ Resources:
             Ref: S3AccessLogsBucket
         - Key: access_logs.s3.prefix
           Value: load-balacing
-        - Key: routing.http.drop_invalid_header_fields.enabled
-          Value: "true"
-        - Key: routing.http.xff_header_processing.mode
-          Value: remove
         - Key: routing.http2.enabled
           Value: "false"
         - Key: idle_timeout.timeout_seconds
@@ -4948,10 +4948,12 @@ Resources:
               Encrypted: true
               VolumeSize: 30
               VolumeType: gp3
-          - DeviceName: /dev/sdf
+          - DeviceName: /dev/xvdba
             Ebs:
               Encrypted: true
-              VolumeSize: 100
+              Iops: 5000
+              Throughput: 500
+              VolumeSize: 300
               VolumeType: gp3
         EbsOptimized: true
         MetadataOptions:
@@ -4991,7 +4993,7 @@ Resources:
                   EC2_INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
 
                   # Get secrets
-                  REDIS_AUTH_TOKEN=$(aws secretsmanager get-secret-value --region 
+                  REDIS_AUTH_TOKEN=$(aws secretsmanager get-secret-value --region
                 - Ref: AWS::Region
                 - " --secret-id /"
                 - Ref: AWS::StackName
@@ -5126,7 +5128,7 @@ Resources:
                     - PrimaryEndPoint.Address
                 - |-
                   ",
-                          "Port": 
+                          "Port":
                 - Fn::GetAtt:
                     - RedisReplicationGroup
                     - PrimaryEndPoint.Port
@@ -5160,7 +5162,6 @@ Resources:
                   # Mount the docker EBS volume
                   echo "UUID=$(blkid -s UUID -o value /dev/sdf)  /docker  xfs defaults 0 2" >> /etc/fstab
                   mount /docker
-                  xfs_growfs -d /docker
 
                   /usr/lib/codeocean/services/docker.sh
 
@@ -5486,7 +5487,6 @@ Resources:
               - s3:ListBucket
               - s3:GetBucketLocation
               - s3:ListBucketMultipartUploads
-              - s3:ListBucketVersions
               - s3:ListMultipartUploadParts
               - s3:AbortMultipartUpload
             Effect: Allow
@@ -5624,16 +5624,6 @@ Resources:
             Effect: Allow
             Resource: "*"
           - Action:
-              - autoscaling:SetInstanceProtection
-              - autoscaling:UpdateAutoScalingGroup
-            Condition:
-              StringEquals:
-                aws:ResourceTag/codeocean:component: workers
-                aws:ResourceTag/codeocean:deployment:
-                  Ref: AWS::StackName
-            Effect: Allow
-            Resource: "*"
-          - Action:
               - elasticfilesystem:ClientMount
               - elasticfilesystem:ClientRootAccess
               - elasticfilesystem:ClientWrite
@@ -5734,10 +5724,7 @@ Resources:
                 - ""
                 - - arn:aws:route53:::hostedzone/
                   - Ref: InternalHostedZone
-          - Action:
-              - batch:DescribeJobDefinitions
-              - batch:DescribeJobQueues
-              - batch:ListJobs
+          - Action: batch:DescribeJobDefinitions
             Effect: Allow
             Resource: "*"
           - Action:
@@ -5771,21 +5758,6 @@ Resources:
                     - :job-definition/
                     - Ref: AWS::StackName
                     - -*
-          - Action: batch:CancelJob
-            Condition:
-              StringEquals:
-                aws:ResourceTag/codeocean:component: pipelines
-                aws:ResourceTag/codeocean:deployment:
-                  Ref: AWS::StackName
-            Effect: Allow
-            Resource:
-              Fn::Join:
-                - ""
-                - - "arn:aws:batch:"
-                  - Ref: AWS::Region
-                  - ":"
-                  - Ref: AWS::AccountId
-                  - :job/*
         Version: "2012-10-17"
   ServicesInstanceRole:
     Type: AWS::IAM::Role
@@ -5904,13 +5876,13 @@ Resources:
                   VPC_CIDR_BLOCK=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/network/interfaces/macs/$MAC/vpc-ipv4-cidr-block)
 
                   # Get secrets
-                  ANALYTICS_DB_MASTER_PASSWORD=$(aws secretsmanager get-secret-value --region 
+                  ANALYTICS_DB_MASTER_PASSWORD=$(aws secretsmanager get-secret-value --region
                 - Ref: AWS::Region
                 - " --secret-id /"
                 - Ref: AWS::StackName
                 - |-
                   /analytics/master-password-0 | jq -r .SecretString)
-                  REDIS_AUTH_TOKEN=$(aws secretsmanager get-secret-value --region 
+                  REDIS_AUTH_TOKEN=$(aws secretsmanager get-secret-value --region
                 - Ref: AWS::Region
                 - " --secret-id /"
                 - Ref: AWS::StackName
@@ -6121,7 +6093,7 @@ Resources:
                     - PrimaryEndPoint.Address
                 - |-
                   ",
-                          "Port": 
+                          "Port":
                 - Fn::GetAtt:
                     - RedisReplicationGroup
                     - PrimaryEndPoint.Port
@@ -6186,7 +6158,7 @@ Resources:
                 - |-
                   
                   if ${PRIVATE_CA}; then
-                    aws acm get-certificate --region 
+                    aws acm get-certificate --region
                 - Ref: AWS::Region
                 - " --certificate-arn "
                 - Ref: pCertificateArn
@@ -6198,14 +6170,13 @@ Resources:
                   # Mount the docker EBS volume
                   echo "UUID=$(blkid -s UUID -o value /dev/sdf)  /docker  xfs defaults 0 2" >> /etc/fstab
                   mount /docker
-                  xfs_growfs -d /docker
 
                   /usr/lib/codeocean/services/docker.sh
 
                   # Mount the data EBS volume
 
                   # First, attach the volume to this instance
-                  until aws ec2 attach-volume --region 
+                  until aws ec2 attach-volume --region
                 - Ref: AWS::Region
                 - " --volume-id "
                 - Ref: DataVolume
@@ -6258,7 +6229,7 @@ Resources:
                       ]
                   }
                   EOF
-                  until aws route53 change-resource-record-sets --hosted-zone-id 
+                  until aws route53 change-resource-record-sets --hosted-zone-id
                 - Ref: InternalHostedZone
                 - |-2
                    --change-batch file:///etc/codeocean/services_dns_config.json; do
@@ -6300,7 +6271,7 @@ Resources:
                   /usr/lib/codeocean/services/systemd.sh
 
                   # Return success signal to ServicesAutoScalingGroup resource creation
-                  /opt/aws/bin/cfn-signal -e 0 --stack 
+                  /opt/aws/bin/cfn-signal -e 0 --stack
                 - Ref: AWS::StackName
                 - " --resource ServicesAutoScalingGroup --region "
                 - Ref: AWS::Region
@@ -6558,7 +6529,7 @@ Resources:
                   xfs_growfs -d $DOCKER_FOLDER
 
                   # Set ebs autoscale for nextflow tmp dir
-                  /opt/amazon-ebs-autoscale/install.sh     -d /dev/xvdba     -f lvm.xfs     -m $DOCKER_FOLDER/volumes     --max-attached-volumes 24     --max-total-created-size 36000     --min-ebs-volume-size 
+                  /opt/amazon-ebs-autoscale/install.sh     -d /dev/xvdba     -f lvm.xfs     -m $DOCKER_FOLDER/volumes     --max-attached-volumes 24     --max-total-created-size 36000     --min-ebs-volume-size
                 - Ref: pBatchVolumeSize
                 - "     --volume-iops "
                 - Ref: pBatchVolumeIops
@@ -6570,7 +6541,7 @@ Resources:
                   /usr/lib/codeocean/batch/docker.sh
 
                   # Configure and run ECS agent
-                  /usr/lib/codeocean/batch/ecs.sh 
+                  /usr/lib/codeocean/batch/ecs.sh
                 - Ref: AWS::StackName
                 - " "
                 - Ref: AWS::Region
@@ -7313,7 +7284,7 @@ Resources:
                   MACHINE_TYPE=0
 
                   # Get secrets
-                  REDIS_AUTH_TOKEN=$(aws secretsmanager get-secret-value --region 
+                  REDIS_AUTH_TOKEN=$(aws secretsmanager get-secret-value --region
                 - Ref: AWS::Region
                 - " --secret-id /"
                 - Ref: AWS::StackName
@@ -7431,7 +7402,7 @@ Resources:
                     - PrimaryEndPoint.Address
                 - |-
                   ",
-                          "Port": 
+                          "Port":
                 - Fn::GetAtt:
                     - RedisReplicationGroup
                     - PrimaryEndPoint.Port
@@ -7441,7 +7412,7 @@ Resources:
                       },
                       "Worker": {
                           "DedicatedMachine": false,
-                          "IdleTimeout": 
+                          "IdleTimeout":
                 - Ref: pAutoScalingIdleTimeout
                 - |-
                   ,
@@ -7499,7 +7470,7 @@ Resources:
                 - |-
                   
                   if ${PRIVATE_CA}; then
-                    aws acm get-certificate --region 
+                    aws acm get-certificate --region
                 - Ref: AWS::Region
                 - " --certificate-arn "
                 - Ref: pCertificateArn
@@ -7537,7 +7508,7 @@ Resources:
                   systemctl enable codeocean-mounts
 
                   cat << EOF > /etc/codeocean/warm-pool
-                  AUTO_SCALING_INSTANCES=\$(aws autoscaling describe-auto-scaling-instances --instance-ids $EC2_INSTANCE_ID --region 
+                  AUTO_SCALING_INSTANCES=\$(aws autoscaling describe-auto-scaling-instances --instance-ids $EC2_INSTANCE_ID --region
                 - Ref: AWS::Region
                 - |-
                   )
@@ -7654,7 +7625,7 @@ Resources:
                   MACHINE_TYPE=1
 
                   # Get secrets
-                  REDIS_AUTH_TOKEN=$(aws secretsmanager get-secret-value --region 
+                  REDIS_AUTH_TOKEN=$(aws secretsmanager get-secret-value --region
                 - Ref: AWS::Region
                 - " --secret-id /"
                 - Ref: AWS::StackName
@@ -7772,7 +7743,7 @@ Resources:
                     - PrimaryEndPoint.Address
                 - |-
                   ",
-                          "Port": 
+                          "Port":
                 - Fn::GetAtt:
                     - RedisReplicationGroup
                     - PrimaryEndPoint.Port
@@ -7782,7 +7753,7 @@ Resources:
                       },
                       "Worker": {
                           "DedicatedMachine": false,
-                          "IdleTimeout": 
+                          "IdleTimeout":
                 - Ref: pAutoScalingIdleTimeout
                 - |-
                   ,
@@ -7840,7 +7811,7 @@ Resources:
                 - |-
                   
                   if ${PRIVATE_CA}; then
-                    aws acm get-certificate --region 
+                    aws acm get-certificate --region
                 - Ref: AWS::Region
                 - " --certificate-arn "
                 - Ref: pCertificateArn
@@ -7878,7 +7849,7 @@ Resources:
                   systemctl enable codeocean-mounts
 
                   cat << EOF > /etc/codeocean/warm-pool
-                  AUTO_SCALING_INSTANCES=\$(aws autoscaling describe-auto-scaling-instances --instance-ids $EC2_INSTANCE_ID --region 
+                  AUTO_SCALING_INSTANCES=\$(aws autoscaling describe-auto-scaling-instances --instance-ids $EC2_INSTANCE_ID --region
                 - Ref: AWS::Region
                 - |-
                   )
@@ -7962,9 +7933,6 @@ Resources:
       MinSize: "0"
       NewInstancesProtectedFromScaleIn: true
       Tags:
-        - Key: codeocean:component
-          PropagateAtLaunch: true
-          Value: workers
         - Key: codeocean:deployment
           PropagateAtLaunch: true
           Value:
@@ -8046,9 +8014,6 @@ Resources:
       MinSize: "0"
       NewInstancesProtectedFromScaleIn: true
       Tags:
-        - Key: codeocean:component
-          PropagateAtLaunch: true
-          Value: workers
         - Key: codeocean:deployment
           PropagateAtLaunch: true
           Value:
@@ -8277,13 +8242,13 @@ Resources:
                   MAC=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/mac)
                   VPC_CIDR_BLOCK=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/network/interfaces/macs/$MAC/vpc-ipv4-cidr-block)
 
-                  MACHINE_TYPE=$(aws ec2 describe-tags --region 
+                  MACHINE_TYPE=$(aws ec2 describe-tags --region
                 - Ref: AWS::Region
                 - |-2
                    --filters "Name=resource-id,Values=$EC2_INSTANCE_ID" | jq -r '.Tags[] | select(.Key=="codeocean.com/machine_type") | .Value')
 
                   # Get secrets
-                  REDIS_AUTH_TOKEN=$(aws secretsmanager get-secret-value --region 
+                  REDIS_AUTH_TOKEN=$(aws secretsmanager get-secret-value --region
                 - Ref: AWS::Region
                 - " --secret-id /"
                 - Ref: AWS::StackName
@@ -8401,7 +8366,7 @@ Resources:
                     - PrimaryEndPoint.Address
                 - |-
                   ",
-                          "Port": 
+                          "Port":
                 - Fn::GetAtt:
                     - RedisReplicationGroup
                     - PrimaryEndPoint.Port
@@ -8411,7 +8376,7 @@ Resources:
                       },
                       "Worker": {
                           "DedicatedMachine": true,
-                          "IdleTimeout": 
+                          "IdleTimeout":
                 - Ref: pAutoScalingIdleTimeout
                 - |-
                   ,
@@ -8469,7 +8434,7 @@ Resources:
                 - |-
                   
                   if ${PRIVATE_CA}; then
-                    aws acm get-certificate --region 
+                    aws acm get-certificate --region
                 - Ref: AWS::Region
                 - " --certificate-arn "
                 - Ref: pCertificateArn
@@ -8507,7 +8472,7 @@ Resources:
                   systemctl enable codeocean-mounts
 
                   cat << EOF > /etc/codeocean/warm-pool
-                  AUTO_SCALING_INSTANCES=\$(aws autoscaling describe-auto-scaling-instances --instance-ids $EC2_INSTANCE_ID --region 
+                  AUTO_SCALING_INSTANCES=\$(aws autoscaling describe-auto-scaling-instances --instance-ids $EC2_INSTANCE_ID --region
                 - Ref: AWS::Region
                 - |-
                   )
@@ -9660,23 +9625,23 @@ Resources:
 Mappings:
   AMIs:
     ap-southeast-2:
-      id: ami-0e9e3ccaa49da37fd
+      id: ami-067f872937f29e617
     ca-central-1:
-      id: ami-0d40fd4818b605bb1
+      id: ami-00d3c3255a67d050c
     eu-central-1:
-      id: ami-09b03499153db2b65
+      id: ami-01fa3295b2255c4fa
     eu-north-1:
-      id: ami-08b8ecf29138f8afb
+      id: ami-015add854bd24d131
     eu-west-2:
-      id: ami-08ca7eb9b5aa068eb
+      id: ami-0304a87639cc08125
     us-east-1:
-      id: ami-0df0afd02ab309b01
+      id: ami-0fc93964209ac6aed
     us-east-2:
-      id: ami-070b8c8131e410512
+      id: ami-071def3994ee76aec
     us-west-1:
-      id: ami-08f5a509fbdd240a3
+      id: ami-0bd35867d957cb938
     us-west-2:
-      id: ami-0216df8dbc818aab8
+      id: ami-0e05855bdf299911f
   ELBAccountID:
     ap-southeast-2:
       AccountID: "783225319266"
