@@ -1,3 +1,5 @@
+# This template was provided by Code Ocean
+
 # Do the following to allow this cloudformation template to
 # automatically validate SSL certificate using DNS validation.
 # 1. Create a hosted zone (i.e. codeocean.mydomain.com) in Route 53
